@@ -288,7 +288,7 @@
   <button class="btn-icon" id="btn-dpad"    title="Mostrar cruceta">✛</button>
   <button class="btn-icon" id="btn-hand"    title="Invertir controles (zurdos)">⇄</button>
   <button class="btn-icon" id="btn-pause"   title="Pausa (Esc)">⏸</button>
-  <button class="btn-icon" id="btn-restart" title="Reiniciar">↺</button>
+  <button class="btn-icon" id="btn-restart" title="Pantalla de inicio">↺</button>
   <button class="btn-icon" id="btn-info"    title="Iconos y controles">ℹ</button>
 </div>
 
@@ -2187,6 +2187,18 @@ const overlayContent=document.getElementById('overlay-content');
 function showOverlay(html){overlayContent.innerHTML=html; overlay.classList.add('active');}
 function hideOverlay(){overlay.classList.remove('active');}
 
+// ↺: guarda y pausa la partida en solitario y vuelve a la pantalla de inicio
+function goTitle() {
+  if (G.dungeon && G.screen === 'playing') {
+    G.paused = false; saveGameState();
+    G.screen = 'menu';
+    if (enemyInterval) { clearInterval(enemyInterval); enemyInterval = null; }
+    document.getElementById('btn-pause').textContent = '⏸';
+    document.getElementById('btn-pause').classList.remove('active-btn');
+  }
+  showTitle();
+}
+
 function showTitle() {
   const continueBtn = hasSavedGame()
     ? `<button class="btn-main" onclick="resumeGame()" style="margin-bottom:12px">CONTINUAR</button>`
@@ -2407,6 +2419,7 @@ function buildChoicePool() {
 }
 
 function showPendingLevelUps(onDone) {
+  if (coop() && NET && NET.on) return coopLevelUps(onDone);
   if (G.pendingLevelUps <= 0) {
     G.screen = 'playing'; // restaurar antes de cargar siguiente mazmorra
     onDone();
@@ -2441,7 +2454,6 @@ function showPendingLevelUps(onDone) {
 function applyLevelChoice(i) {
   const choice = window._lvlChoices[i];
   choice.apply();
-  if (coop()) withP(1, () => { const pool=buildChoicePool(); const c=pool[ri(pool.length)]; c.apply(); addMsg(`Nivel ${G.playerLevel}: ${c.label}`,'#f0d040'); });
   sfx('levelup');
   addMsg(`Nivel ${G.playerLevel}: ${choice.label}`,'#f0d040');
   hideOverlay();
@@ -2688,7 +2700,7 @@ function setupInput() {
   document.getElementById('btn-theme').addEventListener('click',  toggleTheme);
   document.getElementById('btn-audio').addEventListener('click',  toggleAudio);
   document.getElementById('btn-pause').addEventListener('click',  ()=>togglePause());
-  document.getElementById('btn-restart').addEventListener('click',()=>{ if (NET) { if (confirm('¿Salir de la partida online?')) netQuit(); } else showClassSelect(); });
+  document.getElementById('btn-restart').addEventListener('click',()=>{ if (NET) { if (confirm('¿Salir de la partida online?')) netQuit(); } else goTitle(); });
   document.getElementById('btn-info').addEventListener('click',   showInfo);
 
   // ── D-pad táctil: hold-to-repeat ──
@@ -3047,6 +3059,8 @@ function netGone() {
     G.player = G.players[0]; G.players = undefined;
     addMsg('Tu compañero se ha desconectado. Sigues solo.', '#c07030');
     updateHUD(); render();
+    // si estaba eligiendo mejora, no esperamos más
+    if (window._coopLvl) { window._coopLvl.guest = 0; if (window._coopLvl.host === 0) lvlFinish(); }
   } else showNet('Tu compañero se ha desconectado.');
 }
 function netWire(c) {
@@ -3110,6 +3124,46 @@ function startCoop() {
   loadDungeon(1); updateActionBar(); startLoop();
 }
 
+// ── Subida de nivel: cada uno elige sus cartas en su móvil a la vez ──
+function lvlCards(level, pick) {
+  const pool = buildChoicePool().map((c, i) => ({ ...c, i }));
+  shuffle(pool);
+  window._lvlPick = pick; window._lvlOpts = pool.slice(0, 3);
+  const cards = window._lvlOpts.map((c, k) => `
+    <div class="lvl-card" onclick="window._lvlPick(window._lvlOpts[${k}].i)">
+      <div class="lvl-icon">${c.icon}</div><div class="lvl-label">${c.label}</div>
+    </div>`).join('');
+  showOverlay(`<div class="screen-box">
+    <div style="font-size:12px;letter-spacing:3px;color:var(--dim);margin-bottom:4px">NIVEL ${level}</div>
+    <div style="font-size:24px;color:var(--gold);letter-spacing:6px;margin-bottom:20px">MEJORA</div>
+    <div class="lvl-cards">${cards}</div>
+    <div style="font-size:10px;color:var(--dim);margin-top:8px">Elige una mejora permanente · tu compañero elige la suya</div></div>`);
+}
+function coopLevelUps(onDone) {
+  const n = G.pendingLevelUps;
+  if (n <= 0) { G.screen = 'playing'; onDone(); return; }
+  G.screen = 'levelup';
+  const base = G.playerLevel;
+  G.pendingLevelUps = 0; G.playerLevel += n;
+  const L = window._coopLvl = { host:n, guest:n, base, done:onDone };
+  netSend({ t:'lvl', n, base });
+  const next = () => {
+    if (L.host > 0) {
+      lvlCards(base + n - L.host + 1, i => {
+        const c = buildChoicePool()[i]; if (!c) return;
+        c.apply(); sfx('levelup'); addMsg(`Nivel ${base + n - L.host + 1}: ${c.label}`, '#f0d040');
+        L.host--; next();
+      });
+    } else if (L.guest > 0) coopWait('ESPERANDO A QUE TU COMPAÑERO ELIJA MEJORA…');
+    else lvlFinish();
+  };
+  L.next = next; next();
+}
+function lvlFinish() {
+  const L = window._coopLvl; if (!L || L.host > 0 || L.guest > 0) return;
+  window._coopLvl = null; hideOverlay(); G.screen = 'playing'; L.done();
+}
+
 // ── Estado que el anfitrión envía al invitado ──
 function snap() {
   const now = Date.now();
@@ -3124,6 +3178,11 @@ function netData(d) {
   if (d.t === 'bye') { NET.on = false; netGone(); return; }
   if (NET.host) {
     if (d.t === 'cls' && CFG.CLASSES.some(c => c.id === d.id)) { NET.rcls = d.id; if (NET.cls) startCoop(); }
+    else if (d.t === 'lvlc' && window._coopLvl && window._coopLvl.guest > 0) {
+      const L = window._coopLvl, lv = L.base + (L.gDone = (L.gDone || 0) + 1);
+      withP(1, () => { const c = buildChoicePool()[d.i|0]; if (c) { c.apply(); addMsg(`Nivel ${lv}: ${c.label}`, '#f0d040'); } });
+      L.guest--; if (L.host === 0) (L.guest > 0 ? coopWait('ESPERANDO A QUE TU COMPAÑERO ELIJA MEJORA…') : lvlFinish());
+    }
     else if (d.t === 'in' && coop()) {
       const a = d.a, cl = v => Math.max(-1, Math.min(1, v|0));
       if (a === 'pa') { togglePause(); return; }
@@ -3136,6 +3195,16 @@ function netData(d) {
     }
   } else {
     if (d.t === 'pick') showClassSelect();
+    else if (d.t === 'lvl') {
+      let left = Math.max(1, Math.min(9, d.n|0)); const base = d.base|0, n = left;
+      window._lvlLeft = left;
+      const next = () => lvlCards(base + n - left + 1, i => {
+        netSend({ t:'lvlc', i }); sfx('levelup');
+        left--; window._lvlLeft = left;
+        if (left > 0) next(); else coopWait('ESPERANDO A TU COMPAÑERO…');
+      });
+      next();
+    }
     else if (d.t === 's') applySnap(d);
   }
 }
@@ -3171,9 +3240,9 @@ function applySnap(d) {
   const key = d.paused ? 'pause' : d.screen;
   if (key !== window._gKey) {
     window._gKey = key;
-    if (key === 'playing') hideOverlay();
+    if (key === 'playing') { window._lvlLeft = 0; hideOverlay(); }
     else if (key === 'pause') showOverlay(`<div class="screen-box"><div style="font-size:18px;letter-spacing:5px;color:var(--gold);margin-bottom:24px">PAUSA</div><button class="btn-main" onclick="togglePause()">CONTINUAR</button></div>`);
-    else if (key === 'levelup') coopWait('TU COMPAÑERO ELIGE MEJORA…');
+    else if (key === 'levelup') { if (!(window._lvlLeft > 0)) coopWait('ESPERANDO A TU COMPAÑERO…'); }
     else if (key === 'dead') coopWait('HABÉIS CAÍDO · ESPERANDO A TU COMPAÑERO…');
     else if (key === 'gameover') showOverlay(`<div class="screen-box"><div class="screen-title" style="font-size:22px;color:var(--red)">GAME OVER</div>
       <div style="margin:14px 0"><div class="stat-line">Piso alcanzado: <span class="stat-val">${G.depth}</span></div>
