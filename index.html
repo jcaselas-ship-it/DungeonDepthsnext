@@ -3128,7 +3128,15 @@ function startCoop() {
 function lvlCards(level, pick) {
   const pool = buildChoicePool().map((c, i) => ({ ...c, i }));
   shuffle(pool);
-  window._lvlPick = pick; window._lvlOpts = pool.slice(0, 3);
+  // 10 segundos para elegir; si no, se elige al azar para no hacer esperar al compañero
+  clearInterval(window._lvlTimer);
+  let t = 10, done = false;
+  window._lvlPick = i => { if (done) return; done = true; clearInterval(window._lvlTimer); pick(i); };
+  window._lvlOpts = pool.slice(0, 3);
+  window._lvlTimer = setInterval(() => {
+    t--; const el = document.getElementById('lvl-t'); if (el) el.textContent = t;
+    if (t <= 0) window._lvlPick(window._lvlOpts[ri(window._lvlOpts.length)].i);
+  }, 1000);
   const cards = window._lvlOpts.map((c, k) => `
     <div class="lvl-card" onclick="window._lvlPick(window._lvlOpts[${k}].i)">
       <div class="lvl-icon">${c.icon}</div><div class="lvl-label">${c.label}</div>
@@ -3137,7 +3145,7 @@ function lvlCards(level, pick) {
     <div style="font-size:12px;letter-spacing:3px;color:var(--dim);margin-bottom:4px">NIVEL ${level}</div>
     <div style="font-size:24px;color:var(--gold);letter-spacing:6px;margin-bottom:20px">MEJORA</div>
     <div class="lvl-cards">${cards}</div>
-    <div style="font-size:10px;color:var(--dim);margin-top:8px">Elige una mejora permanente · tu compañero elige la suya</div></div>`);
+    <div style="font-size:11px;color:var(--dim);margin-top:8px">Elige una mejora · <span style="color:var(--gold)">⏱ <b id="lvl-t">10</b> s</span>, después se elige al azar</div></div>`);
 }
 function coopLevelUps(onDone) {
   const n = G.pendingLevelUps;
